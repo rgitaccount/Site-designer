@@ -1,0 +1,6 @@
+{
+  "name": "NurSun Proposal Studio",
+  "description": "Professional solar PV engineering and commercial proposal studio for commercial & industrial photovoltaic systems.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
