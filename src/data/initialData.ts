@@ -37,13 +37,21 @@ export const INITIAL_ROOFS: RoofPlane[] = [
       { x: 38.5, y: 27.0 },
       { x: 17.5, y: 27.0 },
     ],
-    azimuthDeg: 180, // Physical roof orientation: South
+    azimuthDeg: 180, // Physical roof orientation: South (180°)
     tiltDeg: 25,     // Physical inclination: 25°
     edgeSetbackM: 0.50,
     panelModelId: DEFAULT_PANEL_MODEL.id,
     panelPowerWatts: DEFAULT_PANEL_MODEL.powerWatts, // 625 W
     orientation: 'portrait',
-    rowSpacingM: 0.35,
+    placementMode: 'fixed-grid',
+    horizontalModuleSpacingM: 0.04, // 4 cm
+    verticalModuleSpacingM: 0.25,   // 25 cm
+    modulesPerRow: 6,
+    modulesPerColumn: 4,
+    horizontalGroupSpacingM: 0.40,  // 40 cm
+    verticalGroupSpacingM: 0.60,    // 60 cm
+    modulesPerGroupX: 6,
+    modulesPerGroupY: 4,
   },
   {
     id: 'roof-b',
@@ -55,13 +63,21 @@ export const INITIAL_ROOFS: RoofPlane[] = [
       { x: 61.5, y: 25.5 },
       { x: 41.5, y: 25.5 },
     ],
-    azimuthDeg: 270, // Physical roof orientation: West
+    azimuthDeg: 270, // Physical roof orientation: West (270°)
     tiltDeg: 15,     // Physical inclination: 15°
     edgeSetbackM: 0.50,
     panelModelId: DEFAULT_PANEL_MODEL.id,
     panelPowerWatts: DEFAULT_PANEL_MODEL.powerWatts, // 625 W
     orientation: 'portrait',
-    rowSpacingM: 0.35,
+    placementMode: 'fixed-grid',
+    horizontalModuleSpacingM: 0.04, // 4 cm
+    verticalModuleSpacingM: 0.25,   // 25 cm
+    modulesPerRow: 6,
+    modulesPerColumn: 3,
+    horizontalGroupSpacingM: 0.40,  // 40 cm
+    verticalGroupSpacingM: 0.60,    // 60 cm
+    modulesPerGroupX: 6,
+    modulesPerGroupY: 3,
   },
 ];
 

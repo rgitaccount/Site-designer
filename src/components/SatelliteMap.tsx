@@ -12,15 +12,16 @@ import {
   viewportScreenToMetric, 
   calculatePixelsPerMeter 
 } from '../utils/mapProjection';
-import { distanceInMeters, isPointInPolygon } from '../utils/geometry';
+import { distanceInMeters, isPointInPolygon, validatePanelFootprint, getPanelFootprintCornersM } from '../utils/geometry';
 import { PANEL_MODELS, DEFAULT_PANEL_MODEL } from '../types/solar';
+import { AlertTriangle } from 'lucide-react';
 
 // The 5 cleanly separated architectural map layers
 import { SatelliteMapLayer } from './map/SatelliteMapLayer';
 import { RoofGeometryLayer } from './map/RoofGeometryLayer';
 import { PanelGeometryLayer } from './map/PanelGeometryLayer';
 import { ObstacleLayer } from './map/ObstacleLayer';
-import { AnnotationLayer } from './map/AnnotationLayer';
+import { AnnotationLayer, InvalidGhostFootprint, PanelPlacementPreview } from './map/AnnotationLayer';
 import { MapControlsOverlay } from './map/MapControlsOverlay';
 
 interface SatelliteMapProps {
@@ -38,6 +39,7 @@ interface SatelliteMapProps {
   activeTool: ActiveTool;
   onToolComplete: () => void;
   geoOrigin?: GeoCoordinate;
+  externalWarning?: string | null;
 }
 
 const DEFAULT_ORIGIN: GeoCoordinate = {
@@ -73,6 +75,7 @@ export const SatelliteMap: React.FC<SatelliteMapProps> = ({
   activeTool,
   onToolComplete,
   geoOrigin = DEFAULT_ORIGIN,
+  externalWarning = null,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -128,6 +131,32 @@ export const SatelliteMap: React.FC<SatelliteMapProps> = ({
   const [draggingVertex, setDraggingVertex] = useState<{ roofId: string; index: number } | null>(null);
   const [draggingPanels, setDraggingPanels] = useState<boolean>(false);
   const [dragStartPointM, setDragStartPointM] = useState<MetricPoint | null>(null);
+  const preDragPanelsRef = useRef<PanelPlacement[]>([]);
+
+  // Subtle visual warning for invalid placement / drag / rotation
+  const [validationWarning, setValidationWarning] = useState<string | null>(null);
+  const warningTimeoutRef = useRef<any>(null);
+  const [invalidGhostFootprint, setInvalidGhostFootprint] = useState<InvalidGhostFootprint | null>(null);
+  const ghostTimeoutRef = useRef<any>(null);
+  const [panelPlacementPreview, setPanelPlacementPreview] = useState<PanelPlacementPreview | null>(null);
+
+  const setInvalidGhost = (ghost: InvalidGhostFootprint | null) => {
+    setInvalidGhostFootprint(ghost);
+    if (ghostTimeoutRef.current) clearTimeout(ghostTimeoutRef.current);
+    if (ghost) {
+      ghostTimeoutRef.current = setTimeout(() => {
+        setInvalidGhostFootprint(null);
+      }, 2500);
+    }
+  };
+
+  const triggerWarning = (msg: string) => {
+    setValidationWarning(msg);
+    if (warningTimeoutRef.current) clearTimeout(warningTimeoutRef.current);
+    warningTimeoutRef.current = setTimeout(() => {
+      setValidationWarning(null);
+    }, 3200);
+  };
 
   // Convert client mouse event to metric coordinates using map projection
   const getMouseMetric = useCallback((e: React.MouseEvent): MetricPoint => {
@@ -197,26 +226,66 @@ export const SatelliteMap: React.FC<SatelliteMapProps> = ({
       return;
     }
 
-    // Tool: Panels - Click on roof to place single panel
+    // Tool: Panels - Place panel exactly at clicked metric coordinate with footprint validation
     if (activeTool === 'panels') {
-      const targetRoof = roofs.find(r => isPointInPolygon(metric, r.polygonM));
-      if (targetRoof) {
-        const model = PANEL_MODELS.find(m => m.id === targetRoof.panelModelId) || DEFAULT_PANEL_MODEL;
-        const newPanel: PanelPlacement = {
-          id: `p-${targetRoof.id}-manual-${Date.now().toString(36)}`,
-          roofId: targetRoof.id,
+      const targetRoof = selectedRoofId 
+        ? (roofs.find((r) => r.id === selectedRoofId && isPointInPolygon(metric, r.polygonM)) || roofs.find((r) => isPointInPolygon(metric, r.polygonM)))
+        : roofs.find((r) => isPointInPolygon(metric, r.polygonM));
+
+      const activeModel = targetRoof 
+        ? (PANEL_MODELS.find((m) => m.id === targetRoof.panelModelId) || DEFAULT_PANEL_MODEL)
+        : DEFAULT_PANEL_MODEL;
+
+      if (!targetRoof) {
+        const badCorners = getPanelFootprintCornersM({
           xM: Math.round(metric.x * 100) / 100,
           yM: Math.round(metric.y * 100) / 100,
           rotationDeg: 0,
-          orientation: targetRoof.orientation,
-          panelModelId: model.id,
-          powerWatts: model.powerWatts,
-        };
-        onUpdatePanels([...panels, newPanel]);
-        onSelectPanels([newPanel.id]);
-        onSelectRoof(targetRoof.id);
+          orientation: 'portrait',
+          panelModelId: activeModel.id,
+        });
+        setInvalidGhost({
+          cornersM: badCorners,
+          message: 'Click must be inside a designated roof plane',
+        });
+        triggerWarning('Cannot place panel: click must be inside a designated roof area.');
         return;
       }
+
+      const candidatePanel: PanelPlacement = {
+        id: `p-${targetRoof.id}-manual-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+        roofId: targetRoof.id,
+        xM: Math.round(metric.x * 100) / 100,
+        yM: Math.round(metric.y * 100) / 100,
+        rotationDeg: 0,
+        orientation: targetRoof.orientation,
+        panelModelId: activeModel.id,
+        powerWatts: activeModel.powerWatts,
+      };
+
+      const roofObstacles = obstacles.filter((obs) => obs.roofId === targetRoof.id || !obs.roofId);
+      const validation = validatePanelFootprint(
+        candidatePanel,
+        targetRoof.polygonM,
+        targetRoof.edgeSetbackM,
+        roofObstacles
+      );
+
+      if (!validation.valid) {
+        setInvalidGhost({
+          cornersM: getPanelFootprintCornersM(candidatePanel),
+          message: validation.message || 'Violates edge setback or intersects obstacle',
+        });
+        triggerWarning(validation.message || 'Cannot place panel: violates roof setback or intersects obstacle.');
+        // Do not create the panel, do not change panel count!
+        return;
+      }
+
+      // Footprint is valid: create panel and select it
+      onUpdatePanels([...panels, candidatePanel]);
+      onSelectPanels([candidatePanel.id]);
+      onSelectRoof(targetRoof.id);
+      return;
     }
 
     // Tool: Select Mode - Marquee or deselect if clicked on empty canvas
@@ -232,6 +301,35 @@ export const SatelliteMap: React.FC<SatelliteMapProps> = ({
   const handleMouseMove = (e: React.MouseEvent) => {
     const metric = getMouseMetric(e);
     setCursorPosM(metric);
+
+    // Live preview of panel footprint under cursor when Panels tool is active
+    if (activeTool === 'panels') {
+      const targetRoof = selectedRoofId 
+        ? (roofs.find((r) => r.id === selectedRoofId && isPointInPolygon(metric, r.polygonM)) || roofs.find((r) => isPointInPolygon(metric, r.polygonM)))
+        : roofs.find((r) => isPointInPolygon(metric, r.polygonM));
+
+      const activeModel = targetRoof 
+        ? (PANEL_MODELS.find((m) => m.id === targetRoof.panelModelId) || DEFAULT_PANEL_MODEL)
+        : DEFAULT_PANEL_MODEL;
+
+      const previewPanel = {
+        xM: Math.round(metric.x * 100) / 100,
+        yM: Math.round(metric.y * 100) / 100,
+        rotationDeg: 0,
+        orientation: targetRoof ? targetRoof.orientation : 'portrait',
+        panelModelId: activeModel.id,
+      };
+
+      const corners = getPanelFootprintCornersM(previewPanel);
+      let isValid = false;
+      if (targetRoof) {
+        const roofObstacles = obstacles.filter((obs) => obs.roofId === targetRoof.id || !obs.roofId);
+        isValid = validatePanelFootprint(previewPanel, targetRoof.polygonM, targetRoof.edgeSetbackM, roofObstacles).valid;
+      }
+      setPanelPlacementPreview({ cornersM: corners, valid: isValid });
+    } else {
+      if (panelPlacementPreview) setPanelPlacementPreview(null);
+    }
 
     // Map Panning (Geographically stable translation)
     if (isPanning) {
@@ -305,11 +403,51 @@ export const SatelliteMap: React.FC<SatelliteMapProps> = ({
   };
 
   const handleMouseUp = () => {
+    if (draggingPanels && hasMovedDragRef.current && selectedPanelIds.length > 0) {
+      // Validate every dragged panel against roof footprint, setback, and obstacles
+      let allValid = true;
+      let failureReason = '';
+      let invalidCorners: MetricPoint[] | null = null;
+
+      for (const pId of selectedPanelIds) {
+        const p = panels.find((pan) => pan.id === pId);
+        if (!p) continue;
+        const roof = roofs.find((r) => r.id === p.roofId);
+        if (!roof) {
+          allValid = false;
+          failureReason = 'Panel is outside roof boundaries.';
+          invalidCorners = getPanelFootprintCornersM(p);
+          break;
+        }
+        const roofObstacles = obstacles.filter((obs) => obs.roofId === roof.id || !obs.roofId);
+        const result = validatePanelFootprint(p, roof.polygonM, roof.edgeSetbackM, roofObstacles);
+        if (!result.valid) {
+          allValid = false;
+          failureReason = result.message || 'Panel position violates roof setback or intersects obstacle.';
+          invalidCorners = getPanelFootprintCornersM(p);
+          break;
+        }
+      }
+
+      if (!allValid) {
+        // Revert panels to pre-drag position!
+        onUpdatePanels(preDragPanelsRef.current);
+        triggerWarning(`Drag cancelled: ${failureReason}`);
+        if (invalidCorners) {
+          setInvalidGhost({
+            cornersM: invalidCorners,
+            message: failureReason,
+          });
+        }
+      }
+    }
+
     setIsPanning(false);
     setSelectionBoxM(null);
     setDraggingVertex(null);
     setDraggingPanels(false);
     setDragStartPointM(null);
+    hasMovedDragRef.current = false;
   };
 
   // Zoom control handlers (Geographically stable zoom around viewport center)
@@ -398,6 +536,7 @@ export const SatelliteMap: React.FC<SatelliteMapProps> = ({
         }
       }
       onSelectRoof(panel.roofId);
+      preDragPanelsRef.current = panels.map((p) => ({ ...p }));
       setDraggingPanels(true);
       setDragStartPointM(getMouseMetric(e));
     }
@@ -462,6 +601,8 @@ export const SatelliteMap: React.FC<SatelliteMapProps> = ({
           measureEndM={measureEndM}
           selectionBoxM={selectionBoxM}
           viewport={viewport}
+          invalidGhostFootprint={invalidGhostFootprint}
+          panelPlacementPreview={panelPlacementPreview}
         />
       </svg>
 
@@ -483,6 +624,7 @@ export const SatelliteMap: React.FC<SatelliteMapProps> = ({
         totalPanelsCount={totalPanelsCount}
         totalCapacityKwp={totalCapacityKwp}
         geoOrigin={geoOrigin}
+        validationWarning={validationWarning || externalWarning}
       />
     </div>
   );

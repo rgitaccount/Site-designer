@@ -9,7 +9,9 @@ import {
   Compass, 
   Crosshair, 
   Check, 
-  X 
+  X,
+  Grid3X3,
+  AlertTriangle
 } from 'lucide-react';
 
 interface MapControlsOverlayProps {
@@ -29,6 +31,7 @@ interface MapControlsOverlayProps {
   totalPanelsCount: number;
   totalCapacityKwp: number;
   geoOrigin: GeoCoordinate;
+  validationWarning?: string | null;
 }
 
 /**
@@ -52,6 +55,7 @@ export const MapControlsOverlay: React.FC<MapControlsOverlayProps> = ({
   totalPanelsCount,
   totalCapacityKwp,
   geoOrigin,
+  validationWarning,
 }) => {
   // Compute live geographic coordinates at the current center of the viewport
   const currentCenterGeo = metricToGeo(viewport.centerMetric, geoOrigin);
@@ -106,6 +110,21 @@ export const MapControlsOverlay: React.FC<MapControlsOverlayProps> = ({
               Clear
             </button>
           )}
+        </div>
+      )}
+
+      {activeTool === 'panels' && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-slate-900/90 backdrop-blur-xs text-white border border-slate-700 px-4 py-2 rounded-md shadow-lg flex items-center gap-2.5 z-40 text-xs">
+          <Grid3X3 className="w-4 h-4 text-blue-400 animate-pulse" />
+          <span>Click anywhere on a roof to place a module at that exact metric coordinate.</span>
+        </div>
+      )}
+
+      {/* Subtle Visual Indication for Invalid Placement/Drag/Rotation */}
+      {validationWarning && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 bg-rose-950/90 backdrop-blur-xs text-rose-200 border border-rose-600/80 px-4 py-2 rounded-md shadow-2xl flex items-center gap-2 z-50 text-xs transition-all duration-200 animate-bounce">
+          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+          <span className="font-medium">{validationWarning}</span>
         </div>
       )}
 

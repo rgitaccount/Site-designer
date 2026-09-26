@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   RoofPlane, 
   PanelPlacement, 
@@ -15,7 +15,7 @@ import {
   INITIAL_OBSTACLES, 
   createInitialPanels 
 } from './data/initialData';
-import { generatePanelsForRoof } from './utils/geometry';
+import { generatePanelsForRoof, validatePanelFootprint } from './utils/geometry';
 import { TopNav } from './components/TopNav';
 import { LeftToolbar } from './components/LeftToolbar';
 import { SatelliteMap } from './components/SatelliteMap';
@@ -44,6 +44,16 @@ export default function App() {
   // Modals & Notifications
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
+  const [warningMessage, setWarningMessage] = useState<string | null>(null);
+  const warningTimerRef = useRef<any>(null);
+
+  const triggerWarning = useCallback((msg: string) => {
+    setWarningMessage(msg);
+    if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
+    warningTimerRef.current = setTimeout(() => {
+      setWarningMessage(null);
+    }, 3200);
+  }, []);
 
   // LIVE DERIVED TOTALS: Strictly calculated from actual placed panel objects
   const totalPanelsCount = panels.length;
@@ -107,13 +117,21 @@ export default function App() {
       name: `Roof ${letter}`,
       color,
       polygonM: pointsM,
-      azimuthDeg: 180, // Physical slope orientation default: South
+      azimuthDeg: 180, // Physical slope orientation default: South (180°)
       tiltDeg: 20,
       edgeSetbackM: 0.50,
       panelModelId: DEFAULT_PANEL_MODEL.id,
       panelPowerWatts: DEFAULT_PANEL_MODEL.powerWatts,
       orientation: 'portrait',
-      rowSpacingM: 0.35,
+      placementMode: 'max-fit',
+      horizontalModuleSpacingM: 0.04,
+      verticalModuleSpacingM: 0.25,
+      modulesPerRow: 4,
+      modulesPerColumn: 3,
+      horizontalGroupSpacingM: 0.40,
+      verticalGroupSpacingM: 0.60,
+      modulesPerGroupX: 4,
+      modulesPerGroupY: 3,
     };
 
     setRoofs((prev) => [...prev, newRoof]);
@@ -157,43 +175,61 @@ export default function App() {
 
   const handleRotateSelectedPanels = useCallback(() => {
     if (selectedPanelIds.length === 0) return;
-    setPanels((prev) =>
-      prev.map((p) => {
+
+    let anyFailed = false;
+    let failureMsg = '';
+
+    setPanels((prev) => {
+      const updated = prev.map((p) => {
         if (!selectedPanelIds.includes(p.id)) return p;
+
         const newRot = (p.rotationDeg + 90) % 360;
-        const newOrient = p.orientation === 'portrait' ? 'landscape' : 'portrait';
-        return {
+        const newOrient: 'portrait' | 'landscape' =
+          (newRot === 90 || newRot === 270) ? 'landscape' : 'portrait';
+
+        const candidate: PanelPlacement = {
           ...p,
           rotationDeg: newRot,
           orientation: newOrient,
         };
-      })
-    );
-  }, [selectedPanelIds]);
 
-  const handleAddSinglePanel = (roofId: string) => {
-    const roof = roofs.find((r) => r.id === roofId);
-    if (!roof) return;
+        const roof = roofs.find((r) => r.id === p.roofId);
+        if (!roof) {
+          anyFailed = true;
+          failureMsg = 'Cannot rotate: roof plane not found.';
+          return p;
+        }
 
-    const avgX = roof.polygonM.reduce((s, pt) => s + pt.x, 0) / roof.polygonM.length;
-    const avgY = roof.polygonM.reduce((s, pt) => s + pt.y, 0) / roof.polygonM.length;
-    const model = PANEL_MODELS.find((m) => m.id === roof.panelModelId) || DEFAULT_PANEL_MODEL;
+        const roofObstacles = obstacles.filter((obs) => obs.roofId === roof.id || !obs.roofId);
+        const validation = validatePanelFootprint(
+          candidate,
+          roof.polygonM,
+          roof.edgeSetbackM,
+          roofObstacles
+        );
 
-    const newPanel: PanelPlacement = {
-      id: `p-single-${Date.now()}`,
-      roofId: roof.id,
-      xM: Math.round((avgX + (Math.random() * 2 - 1)) * 100) / 100,
-      yM: Math.round((avgY + (Math.random() * 2 - 1)) * 100) / 100,
-      rotationDeg: 0,
-      orientation: roof.orientation,
-      panelModelId: model.id,
-      powerWatts: model.powerWatts,
-      row: 0,
-      col: 0,
-    };
+        if (!validation.valid) {
+          anyFailed = true;
+          failureMsg = validation.message || 'Cannot rotate: rotated footprint violates setback or intersects obstacle.';
+          return p; // Keep original rotation and orientation!
+        }
 
-    setPanels((prev) => [...prev, newPanel]);
-    setSelectedPanelIds([newPanel.id]);
+        return candidate;
+      });
+
+      if (anyFailed) {
+        triggerWarning(failureMsg || 'Panel cannot be rotated in this position due to boundary/obstacle constraints.');
+      }
+
+      return updated;
+    });
+  }, [selectedPanelIds, roofs, obstacles, triggerWarning]);
+
+  const handleActivatePanelsTool = (roofId?: string) => {
+    if (roofId) {
+      setSelectedRoofId(roofId);
+    }
+    setActiveTool('panels');
   };
 
   // Keyboard Shortcuts: Delete/Backspace, Esc, Hotkeys
@@ -216,18 +252,35 @@ export default function App() {
         const step = e.shiftKey ? 0.5 : 0.1;
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-        setPanels((prev) =>
-          prev.map((p) => {
-            if (selectedPanelIds.includes(p.id)) {
-              return {
-                ...p,
-                xM: Math.round((p.xM + dx) * 100) / 100,
-                yM: Math.round((p.yM + dy) * 100) / 100,
-              };
+
+        setPanels((prev) => {
+          let allValid = true;
+          const candidatePanels = prev.map((p) => {
+            if (!selectedPanelIds.includes(p.id)) return p;
+            const cand = {
+              ...p,
+              xM: Math.round((p.xM + dx) * 100) / 100,
+              yM: Math.round((p.yM + dy) * 100) / 100,
+            };
+            const roof = roofs.find((r) => r.id === p.roofId);
+            if (!roof) {
+              allValid = false;
+              return p;
             }
-            return p;
-          })
-        );
+            const roofObstacles = obstacles.filter((obs) => obs.roofId === roof.id || !obs.roofId);
+            const val = validatePanelFootprint(cand, roof.polygonM, roof.edgeSetbackM, roofObstacles);
+            if (!val.valid) {
+              allValid = false;
+            }
+            return cand;
+          });
+
+          if (!allValid) {
+            triggerWarning('Movement restricted: panel cannot exceed roof setback or obstacle.');
+            return prev;
+          }
+          return candidatePanels;
+        });
       } else if (e.key.toLowerCase() === 'r') {
         if (selectedPanelIds.length > 0) {
           e.preventDefault();
@@ -250,7 +303,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedPanelIds, handleDeleteSelectedPanels]);
+  }, [selectedPanelIds, handleDeleteSelectedPanels, handleRotateSelectedPanels, roofs, obstacles, triggerWarning]);
 
   // Save handler
   const handleSave = () => {
@@ -283,7 +336,7 @@ export default function App() {
               selectedPanelCount={selectedPanelIds.length}
               onDeleteSelectedPanels={handleDeleteSelectedPanels}
               onRotateSelectedPanels={handleRotateSelectedPanels}
-              onAddPanelManual={() => selectedRoofId && handleAddSinglePanel(selectedRoofId)}
+              onAddPanelManual={() => handleActivatePanelsTool(selectedRoofId || undefined)}
             />
 
             {/* Central Satellite Map Canvas */}
@@ -302,6 +355,7 @@ export default function App() {
               activeTool={activeTool}
               onToolComplete={() => setActiveTool('select')}
               geoOrigin={project.geo}
+              externalWarning={warningMessage}
             />
 
             {/* Right Contextual Properties & Live System Panel */}
@@ -318,7 +372,7 @@ export default function App() {
               selectedPanelIds={selectedPanelIds}
               onDeleteSelectedPanels={handleDeleteSelectedPanels}
               onRotateSelectedPanels={handleRotateSelectedPanels}
-              onAddSinglePanel={handleAddSinglePanel}
+              onAddSinglePanel={(roofId) => handleActivatePanelsTool(roofId)}
             />
           </>
         )}

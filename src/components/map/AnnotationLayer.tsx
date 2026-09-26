@@ -4,6 +4,16 @@ import { MapViewportState } from '../../types/map';
 import { metricToViewportScreen } from '../../utils/mapProjection';
 import { distanceInMeters } from '../../utils/geometry';
 
+export interface InvalidGhostFootprint {
+  cornersM: MetricPoint[];
+  message: string;
+}
+
+export interface PanelPlacementPreview {
+  cornersM: MetricPoint[];
+  valid: boolean;
+}
+
 interface AnnotationLayerProps {
   activeTool: ActiveTool;
   drawingPointsM: MetricPoint[];
@@ -13,6 +23,8 @@ interface AnnotationLayerProps {
   measureEndM: MetricPoint | null;
   selectionBoxM: { startM: MetricPoint; currentM: MetricPoint } | null;
   viewport: MapViewportState;
+  invalidGhostFootprint?: InvalidGhostFootprint | null;
+  panelPlacementPreview?: PanelPlacementPreview | null;
 }
 
 /**
@@ -28,9 +40,73 @@ export const AnnotationLayer: React.FC<AnnotationLayerProps> = ({
   measureEndM,
   selectionBoxM,
   viewport,
+  invalidGhostFootprint,
+  panelPlacementPreview,
 }) => {
   return (
     <g id="layer-annotations" className="pointer-events-none">
+      {/* 0. Live Panel Placement Preview following cursor when Panels tool is active */}
+      {activeTool === 'panels' && panelPlacementPreview && (
+        <g>
+          <polygon
+            points={panelPlacementPreview.cornersM
+              .map((p) => metricToViewportScreen(p, viewport))
+              .map((p) => `${p.x},${p.y}`)
+              .join(' ')}
+            fill={panelPlacementPreview.valid ? 'rgba(56, 189, 248, 0.22)' : 'rgba(244, 63, 94, 0.22)'}
+            stroke={panelPlacementPreview.valid ? '#38bdf8' : '#f43f5e'}
+            strokeWidth="1.5"
+            strokeDasharray="4,3"
+          />
+        </g>
+      )}
+
+      {/* 0b. Invalid Ghost Footprint with subtle CAD warning highlight */}
+      {invalidGhostFootprint && (
+        <g className="animate-pulse">
+          <polygon
+            points={invalidGhostFootprint.cornersM
+              .map((p) => metricToViewportScreen(p, viewport))
+              .map((p) => `${p.x},${p.y}`)
+              .join(' ')}
+            fill="rgba(244, 63, 94, 0.28)"
+            stroke="#f43f5e"
+            strokeWidth="2"
+            strokeDasharray="4,3"
+          />
+          {(() => {
+            const screenCorners = invalidGhostFootprint.cornersM.map((p) => metricToViewportScreen(p, viewport));
+            const centerX = screenCorners.reduce((s, p) => s + p.x, 0) / screenCorners.length;
+            const minY = Math.min(...screenCorners.map((p) => p.y));
+            return (
+              <g transform={`translate(${centerX}, ${minY - 14})`}>
+                <rect
+                  x="-75"
+                  y="-10"
+                  width="150"
+                  height="18"
+                  rx="4"
+                  fill="#0f172a"
+                  fillOpacity="0.95"
+                  stroke="#f43f5e"
+                  strokeWidth="1"
+                />
+                <text
+                  x="0"
+                  y="2.5"
+                  textAnchor="middle"
+                  fill="#fda4af"
+                  fontSize="9.5"
+                  fontWeight="600"
+                  fontFamily="sans-serif"
+                >
+                  ⚠ Invalid Placement
+                </text>
+              </g>
+            );
+          })()}
+        </g>
+      )}
       {/* 1. In-progress Roof Polygon Drawing */}
       {activeTool === 'draw-roof' && drawingPointsM.length > 0 && (
         <g>

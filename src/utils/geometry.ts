@@ -2,7 +2,9 @@ import {
   MetricPoint, 
   PanelPlacement, 
   Obstacle, 
-  PanelModel 
+  PanelModel,
+  PANEL_MODELS,
+  DEFAULT_PANEL_MODEL
 } from '../types/solar';
 
 /**
@@ -237,4 +239,217 @@ export function generatePanelsForRoof(
   }
 
   return panels;
+}
+
+/**
+ * Computes effective rotation angle in degrees (0, 90, 180, 270)
+ * considering both orientation and rotationDeg.
+ */
+export function getEffectivePanelAngle(panel: {
+  rotationDeg: number;
+  orientation: 'portrait' | 'landscape';
+}): number {
+  if (panel.orientation === 'landscape' && panel.rotationDeg % 180 === 0) {
+    return (panel.rotationDeg + 90) % 360;
+  }
+  return (panel.rotationDeg % 360 + 360) % 360;
+}
+
+/**
+ * Computes the 4 corners in metric coordinates of a panel footprint
+ * using its actual physical model dimensions and rotation angle.
+ */
+export function getPanelFootprintCornersM(panel: {
+  xM: number;
+  yM: number;
+  rotationDeg: number;
+  orientation: 'portrait' | 'landscape';
+  panelModelId?: string;
+}): MetricPoint[] {
+  const model = PANEL_MODELS.find(m => m.id === panel.panelModelId) || DEFAULT_PANEL_MODEL;
+  const baseW = model.widthM;
+  const baseH = model.heightM;
+  const center: MetricPoint = { x: panel.xM, y: panel.yM };
+
+  const effectiveAngle = getEffectivePanelAngle(panel);
+
+  const unrotCorners: MetricPoint[] = [
+    { x: panel.xM - baseW / 2, y: panel.yM - baseH / 2 },
+    { x: panel.xM + baseW / 2, y: panel.yM - baseH / 2 },
+    { x: panel.xM + baseW / 2, y: panel.yM + baseH / 2 },
+    { x: panel.xM - baseW / 2, y: panel.yM + baseH / 2 },
+  ];
+
+  if (effectiveAngle === 0) {
+    return unrotCorners;
+  }
+
+  return unrotCorners.map(corner => rotatePoint(corner, center, effectiveAngle));
+}
+
+/**
+ * Checks if two 2D line segments (p1-p2) and (p3-p4) intersect
+ */
+function doSegmentsIntersect(p1: MetricPoint, p2: MetricPoint, p3: MetricPoint, p4: MetricPoint): boolean {
+  const ccw = (a: MetricPoint, b: MetricPoint, c: MetricPoint) => {
+    return (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x);
+  };
+  return (ccw(p1, p3, p4) !== ccw(p2, p3, p4)) && (ccw(p1, p2, p3) !== ccw(p1, p2, p4));
+}
+
+/**
+ * Separating Axis Theorem (SAT) to detect intersection between two convex polygons
+ */
+export function doPolygonsIntersectSAT(polyA: MetricPoint[], polyB: MetricPoint[]): boolean {
+  const polygons = [polyA, polyB];
+
+  for (let i = 0; i < polygons.length; i++) {
+    const polygon = polygons[i];
+    for (let i1 = 0; i1 < polygon.length; i1++) {
+      const i2 = (i1 + 1) % polygon.length;
+      const p1 = polygon[i1];
+      const p2 = polygon[i2];
+
+      // Normal axis perpendicular to edge (p1 -> p2)
+      const normalAxis: MetricPoint = {
+        x: -(p2.y - p1.y),
+        y: p2.x - p1.x,
+      };
+
+      // Project polyA onto normalAxis
+      let minA = Infinity;
+      let maxA = -Infinity;
+      for (const p of polyA) {
+        const projected = p.x * normalAxis.x + p.y * normalAxis.y;
+        if (projected < minA) minA = projected;
+        if (projected > maxA) maxA = projected;
+      }
+
+      // Project polyB onto normalAxis
+      let minB = Infinity;
+      let maxB = -Infinity;
+      for (const p of polyB) {
+        const projected = p.x * normalAxis.x + p.y * normalAxis.y;
+        if (projected < minB) minB = projected;
+        if (projected > maxB) maxB = projected;
+      }
+
+      // Check if projections overlap with slight tolerance (1mm)
+      if (maxA <= minB + 0.001 || maxB <= minA + 0.001) {
+        // Found a separating axis, polygons do not intersect!
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+export type ValidationFailureReason = 'outside_roof' | 'setback_violation' | 'obstacle_collision';
+
+export interface PanelValidationResult {
+  valid: boolean;
+  reason?: ValidationFailureReason;
+  message?: string;
+}
+
+/**
+ * Validates a panel footprint against:
+ * 1. Complete rectangular footprint is inside the roof polygon
+ * 2. Panel respects the roof edge setback in real metres
+ * 3. Panel does not intersect obstacles belonging to that roof
+ * 4. Uses actual physical dimensions of the panel model
+ */
+export function validatePanelFootprint(
+  panel: {
+    xM: number;
+    yM: number;
+    rotationDeg: number;
+    orientation: 'portrait' | 'landscape';
+    panelModelId?: string;
+  },
+  polygonM: MetricPoint[],
+  edgeSetbackM: number,
+  obstacles: Obstacle[] = []
+): PanelValidationResult {
+  if (polygonM.length < 3) {
+    return { valid: false, reason: 'outside_roof', message: 'Invalid roof geometry' };
+  }
+
+  const corners = getPanelFootprintCornersM(panel);
+  const center: MetricPoint = { x: panel.xM, y: panel.yM };
+
+  // 1. Check center point is inside the roof polygon
+  if (!isPointInPolygon(center, polygonM)) {
+    return { valid: false, reason: 'outside_roof', message: 'Panel center is outside the roof boundary' };
+  }
+
+  // 2. Check all 4 corners are inside the roof polygon
+  for (const corner of corners) {
+    if (!isPointInPolygon(corner, polygonM)) {
+      return { valid: false, reason: 'outside_roof', message: 'Panel extends outside the roof boundary' };
+    }
+  }
+
+  // 3. Check 4 edge midpoints to guard against polygon concave edge clipping
+  for (let i = 0; i < 4; i++) {
+    const nextIdx = (i + 1) % 4;
+    const midPoint: MetricPoint = {
+      x: (corners[i].x + corners[nextIdx].x) / 2,
+      y: (corners[i].y + corners[nextIdx].y) / 2,
+    };
+    if (!isPointInPolygon(midPoint, polygonM)) {
+      return { valid: false, reason: 'outside_roof', message: 'Panel edge cuts outside the roof boundary' };
+    }
+  }
+
+  // 4. Check if panel edges intersect the roof polygon perimeter
+  const nPoly = polygonM.length;
+  for (let pi = 0; pi < nPoly; pi++) {
+    const pj = (pi + 1) % nPoly;
+    const polyP1 = polygonM[pi];
+    const polyP2 = polygonM[pj];
+
+    for (let ci = 0; ci < 4; ci++) {
+      const cj = (ci + 1) % 4;
+      if (doSegmentsIntersect(corners[ci], corners[cj], polyP1, polyP2)) {
+        return { valid: false, reason: 'outside_roof', message: 'Panel crosses the roof perimeter' };
+      }
+    }
+  }
+
+  // 5. Check edge setback (all corners and edges must maintain required setback distance)
+  const minRequiredDistance = edgeSetbackM * 0.98;
+  for (const corner of corners) {
+    if (distToPolygonBoundaryM(corner, polygonM) < minRequiredDistance) {
+      return { valid: false, reason: 'setback_violation', message: `Panel violates the ${edgeSetbackM.toFixed(2)}m edge setback` };
+    }
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const nextIdx = (i + 1) % 4;
+    const midPoint: MetricPoint = {
+      x: (corners[i].x + corners[nextIdx].x) / 2,
+      y: (corners[i].y + corners[nextIdx].y) / 2,
+    };
+    if (distToPolygonBoundaryM(midPoint, polygonM) < minRequiredDistance) {
+      return { valid: false, reason: 'setback_violation', message: `Panel violates the ${edgeSetbackM.toFixed(2)}m edge setback` };
+    }
+  }
+
+  // 6. Check collision with obstacles using Separating Axis Theorem (SAT)
+  for (const obs of obstacles) {
+    const obsCorners: MetricPoint[] = [
+      { x: obs.xM - obs.widthM / 2, y: obs.yM - obs.heightM / 2 },
+      { x: obs.xM + obs.widthM / 2, y: obs.yM - obs.heightM / 2 },
+      { x: obs.xM + obs.widthM / 2, y: obs.yM + obs.heightM / 2 },
+      { x: obs.xM - obs.widthM / 2, y: obs.yM + obs.heightM / 2 },
+    ];
+
+    if (doPolygonsIntersectSAT(corners, obsCorners)) {
+      return { valid: false, reason: 'obstacle_collision', message: `Panel intersects obstacle: ${obs.name}` };
+    }
+  }
+
+  return { valid: true };
 }

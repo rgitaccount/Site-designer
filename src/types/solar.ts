@@ -123,18 +123,30 @@ export interface PanelPlacement {
 }
 
 // 5. Roof Plane (Primary Engineering Geometry)
+export type PlacementMode = 'max-fit' | 'fixed-grid';
+
 export interface RoofPlane {
   id: string;
   name: string;
   color: string;
-  polygonM: MetricPoint[]; // Boundary polygon in local metres
-  azimuthDeg: number;      // Physical roof plane azimuth in degrees (0-360, 180 is South)
-  tiltDeg: number;         // Physical roof pitch/inclination in degrees (0-90)
+  polygonM: MetricPoint[]; // Boundary polygon in horizontal projection (local metres)
+  azimuthDeg: number;      // Physical roof plane azimuth in degrees (0-359, 0 is North, 90 is East, 180 is South, 270 is West)
+  tiltDeg: number;         // Physical roof pitch/inclination relative to horizontal (0-90)
   edgeSetbackM: number;    // Edge setback in metres (e.g. 0.50 m)
   panelModelId: string;    // Associated panel model ID
   panelPowerWatts: number; // Panel rated power in Watts
   orientation: 'portrait' | 'landscape';
-  rowSpacingM: number;     // Maintenance corridor pitch between rows in metres
+  
+  // Grid / Array placement engineering parameters
+  placementMode: PlacementMode; // 'max-fit' or 'fixed-grid'
+  horizontalModuleSpacingM: number; // Horizontal module spacing between adjacent modules in metres
+  verticalModuleSpacingM: number;   // Vertical module spacing between adjacent modules in metres
+  modulesPerRow: number;            // Fixed grid columns count
+  modulesPerColumn: number;         // Fixed grid rows count
+  horizontalGroupSpacingM: number;  // Gap between module groups horizontally in metres
+  verticalGroupSpacingM: number;    // Gap between module groups vertically in metres
+  modulesPerGroupX?: number;        // Subgroup size horizontally (default e.g. 2 or disabled)
+  modulesPerGroupY?: number;        // Subgroup size vertically (default e.g. 2 or disabled)
 }
 
 // 6. Application Workflow & Tooling

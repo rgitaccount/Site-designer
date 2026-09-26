@@ -6,6 +6,7 @@ import {
 } from '../../types/solar';
 import { MapViewportState } from '../../types/map';
 import { metricToViewportScreen } from '../../utils/mapProjection';
+import { getEffectivePanelAngle } from '../../utils/geometry';
 
 interface PanelGeometryLayerProps {
   panels: PanelPlacement[];
@@ -33,16 +34,13 @@ export const PanelGeometryLayer: React.FC<PanelGeometryLayerProps> = ({
         const isSelected = selectedPanelIds.includes(panel.id);
         const panelModel = PANEL_MODELS.find((m) => m.id === panel.panelModelId) || DEFAULT_PANEL_MODEL;
 
-        // Metric dimensions in metres from panel model definition
-        const wM = panel.orientation === 'portrait' ? panelModel.widthM : panelModel.heightM;
-        const hM = panel.orientation === 'portrait' ? panelModel.heightM : panelModel.widthM;
-
-        // Convert to current screen pixels based on viewport zoom scale
-        const widthPx = wM * viewport.pixelsPerMeter;
-        const heightPx = hM * viewport.pixelsPerMeter;
+        // Base metric dimensions in metres from physical panel model definition
+        const widthPx = panelModel.widthM * viewport.pixelsPerMeter;
+        const heightPx = panelModel.heightM * viewport.pixelsPerMeter;
 
         const centerScreen = metricToViewportScreen({ x: panel.xM, y: panel.yM }, viewport);
-        const totalRotationDeg = panel.rotationDeg + viewport.bearingDeg;
+        const effectiveAngle = getEffectivePanelAngle(panel);
+        const totalRotationDeg = effectiveAngle + viewport.bearingDeg;
 
         return (
           <g
